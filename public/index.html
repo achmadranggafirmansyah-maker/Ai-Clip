@@ -1508,6 +1508,7 @@ Hasilkan JSON persis sesuai struktur berikut:
       const clip = state.aiResults.clips[i];
       const clipProgressStart = progressStart + (i / totalClips) * progressSpan;
 
+      el('modalTitle').textContent = 'Merender Clip...';
       updateProgress(clipProgressStart, `Merekam Clip #${i+1} dari ${totalClips}: "${clip.headline}"...`);
 
       try {
@@ -1723,11 +1724,71 @@ ${escapeHtml(fullCaption)}
     return data;
   }
 
-  function renderSingleClip(clip, onProgress) {
+  // Elemen video khusus render. Dipasang di DOM (tersembunyi) karena banyak
+  // browser HP menahan decode video yang tidak ada di halaman.
+  function createRenderVideo(muted) {
+    const v = document.createElement('video');
+    v.preload = 'auto';
+    v.muted = muted;
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    v.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1;';
+    v.src = state.videoSrcUrl;
+    document.body.appendChild(v);
+    return v;
+  }
+
+  function disposeRenderVideo(v) {
+    try { v.pause(); } catch (_) {}
+    try { v.removeAttribute('src'); v.load(); v.remove(); } catch (_) {}
+  }
+
+  // Tunggu video siap diputar (ada timeout, supaya tidak menggantung selamanya)
+  function waitVideoReady(v, timeoutMs = 20000) {
+    return new Promise((resolve, reject) => {
+      if (v.readyState >= 2) return resolve();
+      const cleanup = () => {
+        clearTimeout(timer);
+        v.removeEventListener('loadeddata', ok);
+        v.removeEventListener('error', fail);
+      };
+      const ok = () => { cleanup(); resolve(); };
+      const fail = () => { cleanup(); reject(new Error('Video tidak bisa dibaca oleh browser.')); };
+      const timer = setTimeout(() => { cleanup(); reject(new Error('Video gagal dimuat browser (timeout).')); }, timeoutMs);
+      v.addEventListener('loadeddata', ok);
+      v.addEventListener('error', fail);
+    });
+  }
+
+  // Seek yang aman: kalau posisi sudah sama (mis. clip mulai dari detik 0)
+  // event "seeked" tidak akan muncul, jadi jangan ditunggu. Ada timeout juga.
+  function seekVideoTo(v, t, timeoutMs = 8000) {
+    return new Promise(resolve => {
+      if (Math.abs(v.currentTime - t) < 0.05 && v.readyState >= 2) return resolve();
+      const done = () => {
+        clearTimeout(timer);
+        v.removeEventListener('seeked', done);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      v.addEventListener('seeked', done);
+      v.currentTime = t;
+    });
+  }
+
+  async function renderSingleClip(clip, onProgress) {
     // Pakai jalur WebCodecs (frame-accurate, tidak akan desync audio/video)
     // kalau browser mendukung & audio sumber berhasil di-decode di awal.
-    if (window.VideoEncoder && window.AudioEncoder && window.Mp4Muxer && state.decodedAudioBuffer) {
-      return renderSingleClipPrecise(clip, onProgress);
+    const canPrecise = window.VideoEncoder && window.AudioEncoder && window.Mp4Muxer && state.decodedAudioBuffer &&
+      ('requestVideoFrameCallback' in HTMLVideoElement.prototype);
+    if (canPrecise) {
+      try {
+        return await renderSingleClipPrecise(clip, onProgress);
+      } catch (e) {
+        if (state.cancelRequested || e.message === 'Batal') throw e;
+        console.warn('Render presisi gagal/macet, pindah ke metode cadangan:', e);
+        if (onProgress) onProgress(0);
+      }
     }
     return renderSingleClipLegacy(clip, onProgress);
   }
@@ -1743,6 +1804,11 @@ ${escapeHtml(fullCaption)}
   function renderSingleClipPrecise(clip, onProgress) {
     return new Promise(async (resolve, reject) => {
       stopPreviewLoop();
+      let cleanupFns = [];
+      const cleanupPrecise = () => {
+        cleanupFns.forEach(f => { try { f(); } catch (_) {} });
+        cleanupFns = [];
+      };
       try {
         const targetW = state.editor.resolution === 1080 ? 1080 : 720;
         const targetH = state.editor.resolution === 1080 ? 1920 : 1280;
@@ -1753,11 +1819,9 @@ ${escapeHtml(fullCaption)}
         renderCanvas.height = targetH;
         const rCtx = renderCanvas.getContext('2d', { alpha: false });
 
-        const renderVideo = document.createElement('video');
-        renderVideo.src = state.videoSrcUrl;
-        renderVideo.muted = true; // audio diproses terpisah dari buffer PCM, bukan dari elemen video ini
-        renderVideo.playsInline = true;
-        await new Promise(r => { renderVideo.onloadedmetadata = r; });
+        const renderVideo = createRenderVideo(true); // audio diproses terpisah dari buffer PCM
+        cleanupFns.push(() => disposeRenderVideo(renderVideo));
+        await waitVideoReady(renderVideo);
 
         const audioBuf = state.decodedAudioBuffer;
         const bitrate = state.editor.resolution === 1080 ? 8000000 : 5000000;
@@ -1773,6 +1837,7 @@ ${escapeHtml(fullCaption)}
           output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
           error: e => console.error('VideoEncoder error', e)
         });
+        cleanupFns.push(() => { if (videoEncoder.state !== 'closed') videoEncoder.close(); });
         try {
           videoEncoder.configure({
             codec: 'avc1.42001f',
@@ -1792,6 +1857,7 @@ ${escapeHtml(fullCaption)}
           output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
           error: e => console.error('AudioEncoder error', e)
         });
+        cleanupFns.push(() => { if (audioEncoder.state !== 'closed') audioEncoder.close(); });
         audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: audioBuf.sampleRate, numberOfChannels: audioBuf.numberOfChannels, bitrate: 128000 });
 
         // Video diputar normal (bukan di-seek satu-satu, jauh lebih cepat),
@@ -1808,6 +1874,9 @@ ${escapeHtml(fullCaption)}
         let lastMediaTime = clip.start_sec;
         let rvfcHandle = null;
         let finished = false;
+        let lastFrameAt = performance.now();
+        let watchdog = null;
+        cleanupFns.push(() => { if (watchdog) clearInterval(watchdog); });
 
         async function finishAndResolve() {
           if (finished) return;
@@ -1820,8 +1889,10 @@ ${escapeHtml(fullCaption)}
             muxer.finalize();
             const { buffer } = muxer.target;
             const blob = new Blob([buffer], { type: 'video/mp4' });
+            cleanupPrecise();
             resolve(URL.createObjectURL(blob));
           } catch (e) {
+            cleanupPrecise();
             reject(e);
           }
         }
@@ -1829,9 +1900,10 @@ ${escapeHtml(fullCaption)}
         let firstFrameSeen = false;
         async function onFrame(now, metadata) {
           if (finished) return;
+          lastFrameAt = performance.now();
           if (state.cancelRequested) {
             finished = true;
-            renderVideo.pause();
+            cleanupPrecise();
             reject(new Error('Batal'));
             return;
           }
@@ -1882,13 +1954,24 @@ ${escapeHtml(fullCaption)}
           rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
         }
 
-        renderVideo.currentTime = clip.start_sec;
-        renderVideo.onseeked = () => {
-          renderVideo.onseeked = null;
-          renderVideo.play().catch(reject);
-          rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
-        };
+        await seekVideoTo(renderVideo, clip.start_sec);
+        rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
+        await renderVideo.play();
+
+        // Watchdog: kalau tidak ada frame baru selama beberapa detik, batalkan
+        // metode ini (nanti otomatis pindah ke metode cadangan) daripada macet selamanya.
+        lastFrameAt = performance.now();
+        watchdog = setInterval(() => {
+          if (finished) { clearInterval(watchdog); return; }
+          const limit = firstFrameSeen ? 10000 : 15000;
+          if (performance.now() - lastFrameAt > limit) {
+            finished = true;
+            cleanupPrecise();
+            reject(new Error('STALL: tidak ada frame video yang diproses'));
+          }
+        }, 1000);
       } catch (e) {
+        cleanupPrecise();
         reject(e);
       }
     });
@@ -1944,12 +2027,9 @@ ${escapeHtml(fullCaption)}
       renderCanvas.height = targetH;
       const rCtx = renderCanvas.getContext('2d');
 
-      const renderVideo = document.createElement('video');
-      renderVideo.src = state.videoSrcUrl;
-      renderVideo.muted = false;
-      renderVideo.playsInline = true;
-
-      await new Promise(r => { renderVideo.onloadedmetadata = r; });
+      const renderVideo = createRenderVideo(false);
+      try {
+      await waitVideoReady(renderVideo);
 
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       const audioCtx = new AudioCtx();
@@ -1974,16 +2054,18 @@ ${escapeHtml(fullCaption)}
 
       recorder.onstop = () => {
         audioCtx.close();
+        disposeRenderVideo(renderVideo);
         const blob = new Blob(chunks, { type: mimeType || 'video/mp4' });
         resolve(URL.createObjectURL(blob));
       };
 
-      renderVideo.currentTime = clip.start_sec;
+      await seekVideoTo(renderVideo, clip.start_sec);
 
-      renderVideo.onseeked = () => {
-        renderVideo.onseeked = null;
+      {
         renderVideo.play().catch(reject);
         recorder.start();
+        let lastCurr = -1;
+        let lastMoveAt = performance.now();
 
         const duration = clip.end_sec - clip.start_sec;
         const frameInterval = 1000 / 30; // batasi ke ~30fps biar sinkron sama captureStream(30) & nggak boros CPU
@@ -2001,6 +2083,16 @@ ${escapeHtml(fullCaption)}
           if (currTime >= clip.end_sec || renderVideo.ended) {
             renderVideo.pause();
             recorder.stop();
+            return;
+          }
+
+          // Deteksi macet: posisi video tidak bergerak > 15 detik
+          if (currTime !== lastCurr) {
+            lastCurr = currTime;
+            lastMoveAt = performance.now();
+          } else if (performance.now() - lastMoveAt > 15000) {
+            reject(new Error('Video macet saat direkam. Coba resolusi 720p, tutup tab/aplikasi lain, atau pakai video lebih pendek.'));
+            try { renderVideo.pause(); recorder.stop(); } catch (_) {}
             return;
           }
 
@@ -2027,7 +2119,11 @@ ${escapeHtml(fullCaption)}
         }
 
         requestAnimationFrame(drawFrame);
-      };
+      }
+      } catch (e) {
+        disposeRenderVideo(renderVideo);
+        reject(e);
+      }
     });
   }
 
