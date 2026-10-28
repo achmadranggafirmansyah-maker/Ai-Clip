@@ -1522,14 +1522,15 @@ Hasilkan JSON persis sesuai struktur berikut:
       }
     }
 
-    updateProgress(97, 'Menyimpan ke riwayat proyek...');
-    await saveProjectToHistory();
-
     updateProgress(100, 'Selesai! Menyiapkan hasil...');
     await new Promise(r => setTimeout(r, 400));
     hideModal();
     renderResultsPage();
     switchStep(3);
+
+    // Simpan riwayat di BACKGROUND (tidak ditunggu), supaya hasil clip langsung
+    // tampil walau penyimpanan lambat / gagal / kuota browser penuh.
+    saveProjectToHistory().catch(e => console.warn('Simpan riwayat gagal:', e));
   }
 
   async function fetchGeminiWithRetry(model, key, body, retries = 1) {
@@ -2219,6 +2220,7 @@ ${escapeHtml(fullCaption)}
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
+      req.onblocked = () => reject(new Error('Database riwayat sedang dipakai tab lain.'));
     });
   }
 
@@ -2260,7 +2262,9 @@ ${escapeHtml(fullCaption)}
         title,
         createdAt: Date.now(),
         clips: clipsToSave,
-        sourceVideoBlob: state.videoBlob,
+        // Video sumber besar tidak disimpan (bisa bikin kuota browser penuh / macet).
+        // Clip hasil render tetap tersimpan; edit ulang dari riwayat butuh upload ulang.
+        sourceVideoBlob: (state.videoBlob && state.videoBlob.size <= 150 * 1024 * 1024) ? state.videoBlob : null,
         videoDuration: state.videoDuration,
         briefRules: (state.aiResults && state.aiResults.brief_rules) || [],
         editorSettings: { ...state.editor }
@@ -2268,11 +2272,14 @@ ${escapeHtml(fullCaption)}
 
       const db = await openHistoryDB();
       await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Timeout simpan riwayat')), 30000);
         const tx = db.transaction(HISTORY_STORE, 'readwrite');
         tx.objectStore(HISTORY_STORE).add(project);
-        tx.oncomplete = resolve;
-        tx.onerror = () => reject(tx.error);
+        tx.oncomplete = () => { clearTimeout(timer); resolve(); };
+        tx.onerror = () => { clearTimeout(timer); reject(tx.error); };
+        tx.onabort = () => { clearTimeout(timer); reject(tx.error || new Error('Penyimpanan dibatalkan (kuota penuh?)')); };
       });
+      db.close();
     } catch (e) {
       console.warn('Gagal simpan riwayat proyek:', e);
     }
