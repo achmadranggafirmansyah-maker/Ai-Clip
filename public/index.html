@@ -439,6 +439,23 @@
       margin: 0 auto;
     }
 
+    .idea-item {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      background: var(--bg-main);
+    }
+    .idea-item summary {
+      cursor: pointer;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .idea-item .idea-body { padding: 0 12px 4px; }
+    .ideas-title { font-weight: 700; margin: 12px 0 8px; font-size: 14px; }
+
     .copy-box {
       background: var(--bg-input);
       padding: 10px;
@@ -846,7 +863,8 @@
       subOffset: 0,
       subtitleEnabled: true,
       resolution: 720,
-      durationChoice: 'auto'
+      durationChoice: 'auto',
+      ideaCount: 5
     },
     aiResults: null,
     historyEditMode: false,
@@ -1371,8 +1389,8 @@ Kriteria Clip:
 - Target Durasi Clip: ${state.editor.durationChoice === 'brief' ? 'Sesuai aturan di file brief' : state.editor.durationChoice + ' detik'}.
 - Transkrip subtitle akurat kata-per-kata untuk tiap clip dengan timestamp relatif (dimulai dari detik 0 clip), maksimal 7 kata per baris.
 - Urutkan clip dari viral_score tertinggi.
-- Berikan headline (maks 8 kata) & subheadline (maks 12 kata) yang sederhana, jujur, memancing penasaran.
-- Berikan caption (1-2 kalimat) yang memancing interaksi/komentar, tag orang persis dari brief (jika ada), hashtag wajib dari brief, dan hashtag rekomendasi maks 5.
+- Untuk SETIAP clip, berikan TEPAT ${state.editor.ideaCount} IDE berbeda (field "ideas"). Tiap ide berisi headline (maks 8 kata), subheadline (maks 12 kata), dan caption (1-2 kalimat) yang memancing interaksi/komentar. Variasikan sudut pandangnya (misal: rasa penasaran, fakta mengejutkan, emosional, pertanyaan, santai/humor) dan jangan ada ide yang mirip. Semua ide harus sesuai brand tone & aturan brief, sederhana, dan jujur (bukan clickbait menipu).
+- Tag orang persis dari brief (jika ada), hashtag wajib dari brief, dan hashtag rekomendasi maks 5 ditulis SEKALI per clip (bukan per ide, jangan dimasukkan ke caption ide).
 
 Hasilkan JSON persis sesuai struktur berikut:
 {
@@ -1384,9 +1402,10 @@ Hasilkan JSON persis sesuai struktur berikut:
       "end_sec": 40.0,
       "viral_score": 95,
       "reason": "Alasan clip ini berpotensi viral",
-      "headline": "Judul Utama Clip",
-      "subheadline": "SubJudul Penjelas",
-      "caption": "Teks caption pengantar...",
+      "ideas": [
+        {"headline": "Judul ide 1", "subheadline": "SubJudul ide 1", "caption": "Caption ide 1..."},
+        {"headline": "Judul ide 2", "subheadline": "SubJudul ide 2", "caption": "Caption ide 2..."}
+      ],
       "tag_people": "@akun1 @akun2",
       "mandatory_hashtags": "#HashtagWajib",
       "suggested_hashtags": "#fyp #viral #trending",
@@ -1612,6 +1631,74 @@ Hasilkan JSON persis sesuai struktur berikut:
     return { uri: fileInfo.uri, mimeType: fileInfo.mimeType || fileBlob.type || 'video/mp4' };
   }
 
+  // Daftar ide per clip. headline/subheadline/caption utama = ide pertama
+  // (dipakai untuk nama file & kompatibel dengan proyek lama di riwayat).
+  function getClipIdeas(clip) {
+    if (clip && Array.isArray(clip.ideas) && clip.ideas.length) return clip.ideas;
+    if (clip && (clip.headline || clip.subheadline || clip.caption)) {
+      return [{ headline: clip.headline || '', subheadline: clip.subheadline || '', caption: clip.caption || '' }];
+    }
+    return [];
+  }
+
+  function normalizeClipIdeas(c) {
+    let ideas = Array.isArray(c.ideas) ? c.ideas : [];
+    ideas = ideas
+      .filter(i => i && typeof i === 'object')
+      .map(i => ({
+        headline: String(i.headline || '').trim(),
+        subheadline: String(i.subheadline || '').trim(),
+        caption: String(i.caption || '').trim()
+      }))
+      .filter(i => i.headline || i.caption);
+    if (!ideas.length && (c.headline || c.caption)) {
+      ideas = [{ headline: String(c.headline || ''), subheadline: String(c.subheadline || ''), caption: String(c.caption || '') }];
+    }
+    c.ideas = ideas.slice(0, 5);
+    const first = c.ideas[0] || { headline: '', subheadline: '', caption: '' };
+    c.headline = first.headline;
+    c.subheadline = first.subheadline;
+    c.caption = first.caption;
+  }
+
+  function buildIdeasHtml(clip) {
+    const ideas = getClipIdeas(clip);
+    if (!ideas.length) return '';
+    const tags = `${clip.tag_people || ''}\n${clip.mandatory_hashtags || ''} ${clip.suggested_hashtags || ''}`.trim();
+    const items = ideas.map((idea, i) => {
+      const fullCaption = `${idea.caption || ''}\n\n${tags}`.trim();
+      return `
+        <details class="idea-item" ${i === 0 ? 'open' : ''}>
+          <summary>💡 Ide ${i + 1}: ${escapeHtml(idea.headline || '(tanpa headline)')}</summary>
+          <div class="idea-body">
+            <div class="form-group">
+              <label>Headline:</label>
+              <div class="copy-box">
+                <strong>${escapeHtml(idea.headline)}</strong>
+                <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(idea.headline)}')">📋 Salin</button>
+              </div>
+            </div>
+            ${idea.subheadline ? `
+            <div class="form-group">
+              <label>Subheadline:</label>
+              <div class="copy-box">
+                ${escapeHtml(idea.subheadline)}
+                <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(idea.subheadline)}')">📋 Salin</button>
+              </div>
+            </div>` : ''}
+            <div class="form-group">
+              <label>Caption Siap Upload:</label>
+              <div class="copy-box" style="white-space: pre-wrap;">
+${escapeHtml(fullCaption)}
+                <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(fullCaption)}')">📋 Salin Caption Lengkap</button>
+              </div>
+            </div>
+          </div>
+        </details>`;
+    }).join('');
+    return `<div class="ideas-title">💡 ${ideas.length} Ide Headline, Subheadline & Caption (tap untuk buka)</div>${items}`;
+  }
+
   function parseAndValidateAiJson(rawText, maxDuration) {
     let clean = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
     let data;
@@ -1626,6 +1713,7 @@ Hasilkan JSON persis sesuai struktur berikut:
     }
 
     data.clips = data.clips.filter(c => {
+      normalizeClipIdeas(c);
       c.start_sec = Math.max(0, parseFloat(c.start_sec) || 0);
       c.end_sec = Math.min(maxDuration, parseFloat(c.end_sec) || maxDuration);
       return c.end_sec - c.start_sec >= 10;
@@ -1972,7 +2060,6 @@ Hasilkan JSON persis sesuai struktur berikut:
       const card = document.createElement('div');
       card.className = 'clip-card';
 
-      const fullCaption = `${clip.caption}\n\n${clip.tag_people || ''}\n${clip.mandatory_hashtags || ''} ${clip.suggested_hashtags || ''}`.trim();
 
       card.innerHTML = `
         <div class="clip-badge-row">
@@ -1990,29 +2077,7 @@ Hasilkan JSON persis sesuai struktur berikut:
           </div>
         `}
 
-        <div class="form-group">
-          <label>Headline:</label>
-          <div class="copy-box">
-            <strong>${escapeHtml(clip.headline)}</strong>
-            <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(clip.headline)}')">📋 Salin</button>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label>Subheadline:</label>
-          <div class="copy-box">
-            ${escapeHtml(clip.subheadline)}
-            <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(clip.subheadline)}')">📋 Salin</button>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label>Caption Siap Upload:</label>
-          <div class="copy-box" style="white-space: pre-wrap;">
-${escapeHtml(fullCaption)}
-            <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(fullCaption)}')">📋 Salin Caption Lengkap</button>
-          </div>
-        </div>
+        ${buildIdeasHtml(clip)}
 
         ${clip.success ? `
           <a class="btn btn-block" href="${clip.blobUrl}" download="clipviral-0${idx+1}-${slugify(clip.headline)}.mp4">
@@ -2081,6 +2146,7 @@ ${escapeHtml(fullCaption)}
           headline: clip.headline,
           subheadline: clip.subheadline,
           caption: clip.caption,
+          ideas: getClipIdeas(clip),
           tag_people: clip.tag_people || '',
           mandatory_hashtags: clip.mandatory_hashtags || '',
           suggested_hashtags: clip.suggested_hashtags || '',
@@ -2157,6 +2223,7 @@ ${escapeHtml(fullCaption)}
           headline: c.headline,
           subheadline: c.subheadline,
           caption: c.caption,
+          ideas: getClipIdeas(c),
           tag_people: c.tag_people || '',
           mandatory_hashtags: c.mandatory_hashtags || '',
           suggested_hashtags: c.suggested_hashtags || '',
@@ -2272,7 +2339,6 @@ ${escapeHtml(fullCaption)}
           if (projectEl) projectEl.classList.add('open');
           clipsEl.innerHTML = project.clips.map((clip, idx) => {
             const url = URL.createObjectURL(clip.blob);
-            const fullCaption = `${clip.caption || ''}\n\n${clip.tag_people || ''}\n${clip.mandatory_hashtags || ''} ${clip.suggested_hashtags || ''}`.trim();
             return `
               <div class="clip-card history-clip-card">
                 <div class="clip-badge-row">
@@ -2282,33 +2348,7 @@ ${escapeHtml(fullCaption)}
 
                 <video class="clip-video-preview" src="${url}" controls playsinline preload="metadata"></video>
 
-                <div class="form-group">
-                  <label>Headline:</label>
-                  <div class="copy-box">
-                    <strong>${escapeHtml(clip.headline || `Clip #${idx + 1}`)}</strong>
-                    <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(clip.headline || '')}')">📋 Salin</button>
-                  </div>
-                </div>
-
-                ${clip.subheadline ? `
-                <div class="form-group">
-                  <label>Subheadline:</label>
-                  <div class="copy-box">
-                    ${escapeHtml(clip.subheadline)}
-                    <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(clip.subheadline)}')">📋 Salin</button>
-                  </div>
-                </div>
-                ` : ''}
-
-                ${clip.caption ? `
-                <div class="form-group">
-                  <label>Caption Siap Upload:</label>
-                  <div class="copy-box" style="white-space: pre-wrap;">
-${escapeHtml(fullCaption)}
-                    <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(fullCaption)}')">📋 Salin Caption Lengkap</button>
-                  </div>
-                </div>
-                ` : ''}
+                ${buildIdeasHtml(clip)}
 
                 <a class="btn btn-block" href="${url}" download="clipviral-0${idx+1}-${slugify(clip.headline || 'clip')}.mp4">⬇️ Download MP4</a>
               </div>
