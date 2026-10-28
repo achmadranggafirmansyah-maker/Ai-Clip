@@ -640,7 +640,7 @@
 
     <!-- UPLOAD VIDEO -->
     <div id="contentLocal" class="form-group">
-      <label for="videoFile">Upload File Video (MP4, MOV, WEBM, maks 30 menit)</label>
+      <label for="videoFile">Upload File Video (MP4, MOV, WEBM, maks 35 menit)</label>
       <input type="file" id="videoFile" accept="video/mp4,video/quicktime,video/webm" style="display:none;" />
       <button class="btn btn-secondary btn-block" onclick="document.getElementById('videoFile').click()">
         🎥 Pilih File Video dari Perangkat
@@ -1130,15 +1130,15 @@
     warnBox.classList.add('hidden');
     warnBox.innerHTML = '';
 
-    if (state.videoDuration > 1800) {
-      warnBox.innerHTML = '<strong>⚠️ Peringatan:</strong> Durasi video melebihi 30 menit. Mohon gunakan video yang lebih pendek (maks 30 menit) untuk performa browser yang stabil.';
+    if (state.videoDuration > 2100) {
+      warnBox.innerHTML = '<strong>⚠️ Peringatan:</strong> Durasi video melebihi 35 menit. Mohon gunakan video yang lebih pendek (maks 35 menit) untuk performa browser yang stabil.';
       warnBox.classList.remove('hidden');
     }
   }
 
   function validateStep1() {
     const hasVideo = state.videoSrcUrl !== null && state.videoDuration > 0;
-    const isDurationValid = state.videoDuration <= 1800;
+    const isDurationValid = state.videoDuration <= 2100;
     const isValid = state.apiKey && state.briefFile && hasVideo && isDurationValid;
     el('btnGoToStep2').disabled = !isValid;
   }
