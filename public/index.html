@@ -456,6 +456,16 @@
     .idea-item .idea-body { padding: 0 12px 4px; }
     .ideas-title { font-weight: 700; margin: 12px 0 8px; font-size: 14px; }
 
+    .hook-block {
+      border: 1px solid rgba(245,158,11,0.35);
+      border-left: 4px solid #f59e0b;
+      background: rgba(245,158,11,0.07);
+      border-radius: 10px;
+      padding: 12px;
+      margin: 12px 0;
+    }
+    .hook-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+
     .copy-box {
       background: var(--bg-input);
       padding: 10px;
@@ -793,6 +803,21 @@
       </div>
     </div>
 
+    <div class="card" style="background: var(--bg-input);">
+      <div class="card-title" style="font-size: 14px; border:none; padding:0;">Ide Teks & Video Hook</div>
+
+      <div class="slider-group">
+        <div class="slider-header"><span>Jumlah Ide Headline & Subheadline per Clip</span><span id="valIdeaCount">5</span></div>
+        <input type="range" id="sliderIdeaCount" min="0" max="5" step="1" value="5" />
+      </div>
+      <div class="sub-label">Tiap ide berisi headline, subheadline, dan caption. Kalau 0, AI hanya membuat 1 caption per clip.</div>
+
+      <label class="checkbox-group" style="margin-top:12px;">
+        <input type="checkbox" id="hookEnabledToggle" checked /> Cari Video Hook otomatis
+      </label>
+      <div class="sub-label">Hook diambil dari bagian inti tiap clip utama (4-10 detik), memakai gaya edit yang sama, lengkap dengan 1-3 kalimat hook. Menambah waktu render.</div>
+    </div>
+
     <div class="flex-row" style="margin-top: 8px;">
       <button class="btn btn-secondary" id="btnBackToStep1" style="flex:1;">⬅️ Kembali</button>
       <button class="btn" id="btnStartProcess" style="flex:2;">🚀 Proses Clip Sekarang</button>
@@ -864,7 +889,8 @@
       subtitleEnabled: true,
       resolution: 720,
       durationChoice: 'auto',
-      ideaCount: 5
+      ideaCount: 5,
+      hookEnabled: true
     },
     aiResults: null,
     historyEditMode: false,
@@ -987,6 +1013,13 @@
     });
     document.getElementsByName('durOption').forEach(r => {
       r.addEventListener('change', e => state.editor.durationChoice = e.target.value);
+    });
+    el('sliderIdeaCount').addEventListener('input', e => {
+      state.editor.ideaCount = parseInt(e.target.value) || 0;
+      el('valIdeaCount').textContent = state.editor.ideaCount;
+    });
+    el('hookEnabledToggle').addEventListener('change', e => {
+      state.editor.hookEnabled = e.target.checked;
     });
 
     el('btnTogglePlay').addEventListener('click', () => {
@@ -1379,6 +1412,31 @@
       const uploadedFile = await uploadVideoToGeminiFilesApi(state.videoBlob, state.apiKey, p => updateProgress(15 + p * 0.2, p));
       const fileDataPayload = { fileData: { fileUri: uploadedFile.uri, mimeType: uploadedFile.mimeType } };
 
+      const ideaN = state.editor.ideaCount;
+      const hookOn = !!state.editor.hookEnabled;
+      const ideaRule = ideaN > 0
+        ? `- Untuk SETIAP clip, berikan TEPAT ${ideaN} IDE berbeda (field "ideas"). Tiap ide berisi headline (maks 8 kata), subheadline (maks 12 kata), dan caption (1-2 kalimat) yang memancing interaksi/komentar. Variasikan sudut pandangnya (misal: rasa penasaran, fakta mengejutkan, emosional, pertanyaan, santai/humor) dan jangan ada ide yang mirip. Semua ide harus sesuai brand tone & aturan brief, sederhana, dan jujur (bukan clickbait menipu).`
+        : `- JANGAN membuat ide headline/subheadline. Untuk SETIAP clip cukup berikan SATU caption (field "caption", 1-2 kalimat, memancing interaksi/komentar, sesuai brand tone & brief) dan isi "ideas" dengan array kosong [].`;
+      const hookRule = hookOn
+        ? `\n- Untuk SETIAP clip, tentukan juga satu VIDEO HOOK (field "hook"): potongan pendek 4-10 detik (ideal 5-8 detik) yang diambil dari DALAM rentang clip utama itu sendiri (start_sec & end_sec hook WAJIB berada di antara start_sec dan end_sec clip utama, pakai waktu absolut video asli). Pilih momen INTI yang paling menarik: puncak cerita, fakta mengejutkan, pernyataan berani, emosi kuat, atau momen lucu. Mulai di awal kalimat dan selesai di akhir kalimat/ide (jangan terpotong).\n- Isi "spoken_text" dengan kata-kata yang benar-benar diucapkan pada potongan hook tersebut. Lalu buat 1-3 kalimat hook (field "sentences", maks 14 kata per kalimat) yang akan dibaca penonton sebelum/bersama video hook: kalimat harus SINGKRON dan sesuai isi potongan hook (bukan mengarang hal lain), memancing rasa penasaran supaya penonton ingin melihat momen yang dimaksud, tanpa membocorkan semuanya dan tanpa berbohong. Variasikan gayanya (pertanyaan, pernyataan berani, teaser).`
+        : '';
+      const ideasSchema = ideaN > 0
+        ? `      "ideas": [
+        {"headline": "Judul ide 1", "subheadline": "SubJudul ide 1", "caption": "Caption ide 1..."},
+        {"headline": "Judul ide 2", "subheadline": "SubJudul ide 2", "caption": "Caption ide 2..."}
+      ],`
+        : `      "ideas": [],
+      "caption": "Caption clip...",`;
+      const hookSchema = hookOn
+        ? `
+      "hook": {
+        "start_sec": 24.0,
+        "end_sec": 31.0,
+        "spoken_text": "Kata-kata yang diucapkan pada potongan hook",
+        "sentences": ["Kalimat hook 1", "Kalimat hook 2"]
+      },`
+        : '';
+
       const prompt = `Anda adalah editor video viral profesional TikTok/Reels/Shorts.
 Tugas Anda: Analisis video ini bersama file brief campaign yang dilampirkan.
 Aturan Brief: Baca brief dengan cermat, patuhi semua syarat, brand tone, larangan, tag akun wajib, dan hashtag wajib.
@@ -1389,8 +1447,8 @@ Kriteria Clip:
 - Target Durasi Clip: ${state.editor.durationChoice === 'brief' ? 'Sesuai aturan di file brief' : state.editor.durationChoice + ' detik'}.
 - Transkrip subtitle akurat kata-per-kata untuk tiap clip dengan timestamp relatif (dimulai dari detik 0 clip), maksimal 7 kata per baris.
 - Urutkan clip dari viral_score tertinggi.
-- Untuk SETIAP clip, berikan TEPAT ${state.editor.ideaCount} IDE berbeda (field "ideas"). Tiap ide berisi headline (maks 8 kata), subheadline (maks 12 kata), dan caption (1-2 kalimat) yang memancing interaksi/komentar. Variasikan sudut pandangnya (misal: rasa penasaran, fakta mengejutkan, emosional, pertanyaan, santai/humor) dan jangan ada ide yang mirip. Semua ide harus sesuai brand tone & aturan brief, sederhana, dan jujur (bukan clickbait menipu).
-- Tag orang persis dari brief (jika ada), hashtag wajib dari brief, dan hashtag rekomendasi maks 5 ditulis SEKALI per clip (bukan per ide, jangan dimasukkan ke caption ide).
+${ideaRule}
+- Tag orang persis dari brief (jika ada), hashtag wajib dari brief, dan hashtag rekomendasi maks 5 ditulis SEKALI per clip (bukan per ide, jangan dimasukkan ke caption ide).${hookRule}
 
 Hasilkan JSON persis sesuai struktur berikut:
 {
@@ -1402,10 +1460,7 @@ Hasilkan JSON persis sesuai struktur berikut:
       "end_sec": 40.0,
       "viral_score": 95,
       "reason": "Alasan clip ini berpotensi viral",
-      "ideas": [
-        {"headline": "Judul ide 1", "subheadline": "SubJudul ide 1", "caption": "Caption ide 1..."},
-        {"headline": "Judul ide 2", "subheadline": "SubJudul ide 2", "caption": "Caption ide 2..."}
-      ],
+${ideasSchema}${hookSchema}
       "tag_people": "@akun1 @akun2",
       "mandatory_hashtags": "#HashtagWajib",
       "suggested_hashtags": "#fyp #viral #trending",
@@ -1501,25 +1556,52 @@ Hasilkan JSON persis sesuai struktur berikut:
 
     state.renderedClips = [];
     const totalClips = state.aiResults.clips.length;
+    const useHook = !!state.editor.hookEnabled;
+    const totalJobs = state.aiResults.clips.reduce((n, c) => n + 1 + ((useHook && c.hook) ? 1 : 0), 0);
     const progressSpan = 95 - progressStart;
+    let jobIdx = 0;
+    const jobStart = () => progressStart + (jobIdx / totalJobs) * progressSpan;
+    const jobProgress = p => progressStart + ((jobIdx + p / 100) / totalJobs) * progressSpan;
 
     for (let i = 0; i < totalClips; i++) {
       if (state.cancelRequested) throw new Error('Proses dibatalkan oleh pengguna.');
       const clip = state.aiResults.clips[i];
-      const clipProgressStart = progressStart + (i / totalClips) * progressSpan;
+      const label = clip.headline || `Clip ${i + 1}`;
+      const rec = { ...clip, blobUrl: null, success: false };
 
       el('modalTitle').textContent = 'Merender Clip...';
-      updateProgress(clipProgressStart, `Merekam Clip #${i+1} dari ${totalClips}: "${clip.headline}"...`);
 
+      // 1) Video hook (diambil dari dalam clip utama, gaya edit sama)
+      if (useHook && clip.hook) {
+        rec.hookAttempted = true;
+        updateProgress(jobStart(), `Merekam Hook #${i+1} dari ${totalClips}...`);
+        try {
+          rec.hookBlobUrl = await renderSingleClip(buildHookRenderClip(clip), p => {
+            updateProgress(jobProgress(p), `Merekam Hook #${i+1}: ${Math.round(p)}%`);
+          });
+          rec.hookSuccess = true;
+        } catch (err) {
+          if (state.cancelRequested || err.message === 'Batal') throw new Error('Proses dibatalkan oleh pengguna.');
+          console.error(`Render hook #${i+1} gagal:`, err);
+          rec.hookSuccess = false;
+          rec.hookError = err.message;
+        }
+        jobIdx++;
+      }
+
+      // 2) Clip utama
+      updateProgress(jobStart(), `Merekam Clip #${i+1} dari ${totalClips}: "${label}"...`);
       try {
-        const blobUrl = await renderSingleClip(clip, p => {
-          updateProgress(clipProgressStart + (p * (progressSpan / 100) / totalClips), `Merekam Clip #${i+1}: ${Math.round(p)}%`);
+        rec.blobUrl = await renderSingleClip(clip, p => {
+          updateProgress(jobProgress(p), `Merekam Clip #${i+1}: ${Math.round(p)}%`);
         });
-        state.renderedClips.push({ ...clip, blobUrl, success: true });
+        rec.success = true;
       } catch (err) {
         console.error(`Render clip #${i+1} gagal:`, err);
-        state.renderedClips.push({ ...clip, blobUrl: null, success: false, errorMsg: err.message });
+        rec.errorMsg = err.message;
       }
+      jobIdx++;
+      state.renderedClips.push(rec);
     }
 
     updateProgress(100, 'Selesai! Menyiapkan hasil...');
@@ -1656,11 +1738,86 @@ Hasilkan JSON persis sesuai struktur berikut:
     if (!ideas.length && (c.headline || c.caption)) {
       ideas = [{ headline: String(c.headline || ''), subheadline: String(c.subheadline || ''), caption: String(c.caption || '') }];
     }
-    c.ideas = ideas.slice(0, 5);
+    if (state.editor.ideaCount === 0) {
+      // Mode tanpa ide: hanya 1 caption, tanpa headline/subheadline
+      ideas = ideas.slice(0, 1).map(i => ({ headline: '', subheadline: '', caption: i.caption }));
+    } else {
+      ideas = ideas.slice(0, Math.min(5, Math.max(1, state.editor.ideaCount || 5)));
+    }
+    c.ideas = ideas;
     const first = c.ideas[0] || { headline: '', subheadline: '', caption: '' };
     c.headline = first.headline;
     c.subheadline = first.subheadline;
     c.caption = first.caption;
+  }
+
+  // Rapikan data hook dari AI: harus di dalam rentang clip utama, durasi wajar, dan punya kalimat.
+  function normalizeClipHook(c) {
+    const h = c.hook;
+    c.hook = null;
+    if (!state.editor.hookEnabled || !h || typeof h !== 'object') return;
+    let hs = parseFloat(h.start_sec);
+    let he = parseFloat(h.end_sec);
+    if (!isFinite(hs) || !isFinite(he)) return;
+    hs = Math.max(hs, c.start_sec);
+    he = Math.min(he, c.end_sec);
+    if (he - hs > 15) he = hs + 15;
+    if (he - hs < 2.5) return;
+    const sentences = (Array.isArray(h.sentences) ? h.sentences : [])
+      .map(t => String(t || '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    if (!sentences.length) return;
+    c.hook = {
+      start_sec: hs,
+      end_sec: he,
+      spoken_text: String(h.spoken_text || '').trim(),
+      sentences
+    };
+  }
+
+  // Objek "clip" untuk dirender sebagai video hook: waktu absolut + subtitle disesuaikan
+  // (subtitle clip utama bersifat relatif terhadap awal clip utama).
+  function buildHookRenderClip(clip) {
+    const h = clip.hook;
+    const off = h.start_sec - clip.start_sec;
+    const len = h.end_sec - h.start_sec;
+    const subs = (clip.subtitles || [])
+      .filter(sb => sb.end > off && sb.start < off + len)
+      .map(sb => ({
+        start: Math.max(0, sb.start - off),
+        end: Math.min(len, sb.end - off),
+        text: sb.text
+      }));
+    return { start_sec: h.start_sec, end_sec: h.end_sec, subtitles: subs, headline: 'hook' };
+  }
+
+  function buildHookHtml(clip, idx, url, ok, errMsg, canRetry) {
+    const h = clip.hook;
+    if (!h) return '';
+    const dur = Math.round((h.end_sec - h.start_sec) * 10) / 10;
+    const media = ok && url ? `
+      <video class="clip-video-preview" src="${url}" controls playsinline preload="metadata"></video>
+      <a class="btn btn-block" href="${url}" download="hook-0${idx + 1}-${slugify(clip.headline || 'clip')}.mp4">⬇️ Download Hook MP4</a>
+    ` : `
+      <div class="notice-box warning">Gagal merekam video hook: ${escapeHtml(errMsg || 'Error')}
+        ${canRetry ? `<br/><button class="btn btn-sm btn-secondary" onclick="retryHook(${idx})" style="margin-top:8px;">🔄 Coba Ulang Hook</button>` : ''}
+      </div>
+    `;
+    const sentences = (h.sentences || []).map(t => `
+      <div class="copy-box">
+        ${escapeHtml(t)}
+        <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(t)}')">📋 Salin</button>
+      </div>`).join('');
+    return `
+      <div class="hook-block">
+        <div class="hook-title">🎣 Video Hook · ${formatTime(h.start_sec)} - ${formatTime(h.end_sec)} (${dur} detik)</div>
+        ${media}
+        <div class="ideas-title">🎣 Rekomendasi Kalimat Hook (sesuai isi video hook)</div>
+        ${sentences}
+        ${h.spoken_text ? `<div class="sub-label">🗣️ Yang diucapkan di momen hook: ${escapeHtml(h.spoken_text)}</div>` : ''}
+      </div>
+      <div class="hook-title" style="margin-top:12px;">🎬 Clip Utama</div>`;
   }
 
   function buildIdeasHtml(clip) {
@@ -1671,8 +1828,9 @@ Hasilkan JSON persis sesuai struktur berikut:
       const fullCaption = `${idea.caption || ''}\n\n${tags}`.trim();
       return `
         <details class="idea-item" ${i === 0 ? 'open' : ''}>
-          <summary>💡 Ide ${i + 1}: ${escapeHtml(idea.headline || '(tanpa headline)')}</summary>
+          <summary>${idea.headline ? `💡 Ide ${i + 1}: ${escapeHtml(idea.headline)}` : `💡 Caption${ideas.length > 1 ? ' ' + (i + 1) : ''}`}</summary>
           <div class="idea-body">
+            ${idea.headline ? `
             <div class="form-group">
               <label>Headline:</label>
               <div class="copy-box">
@@ -1680,6 +1838,7 @@ Hasilkan JSON persis sesuai struktur berikut:
                 <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(idea.headline)}')">📋 Salin</button>
               </div>
             </div>
+            ` : ''}
             ${idea.subheadline ? `
             <div class="form-group">
               <label>Subheadline:</label>
@@ -1698,7 +1857,9 @@ ${escapeHtml(fullCaption)}
           </div>
         </details>`;
     }).join('');
-    return `<div class="ideas-title">💡 ${ideas.length} Ide Headline, Subheadline & Caption (tap untuk buka)</div>${items}`;
+    const hasHeadline = ideas.some(i => i.headline);
+    const title = hasHeadline ? `💡 ${ideas.length} Ide Headline, Subheadline & Caption (tap untuk buka)` : '💡 Caption';
+    return `<div class="ideas-title">${title}</div>${items}`;
   }
 
   function parseAndValidateAiJson(rawText, maxDuration) {
@@ -1718,6 +1879,7 @@ ${escapeHtml(fullCaption)}
       normalizeClipIdeas(c);
       c.start_sec = Math.max(0, parseFloat(c.start_sec) || 0);
       c.end_sec = Math.min(maxDuration, parseFloat(c.end_sec) || maxDuration);
+      normalizeClipHook(c);
       return c.end_sec - c.start_sec >= 10;
     });
 
@@ -2166,6 +2328,8 @@ ${escapeHtml(fullCaption)}
         <div class="sub-label">⏱️ Rentang Asal: ${formatTime(clip.start_sec)} - ${formatTime(clip.end_sec)}</div>
         <div class="sub-label">💡 ${escapeHtml(clip.reason || '')}</div>
 
+        ${(clip.hook && (clip.hookAttempted || clip.hookBlobUrl)) ? buildHookHtml(clip, idx, clip.hookBlobUrl, !!clip.hookSuccess, clip.hookError, true) : ''}
+
         ${clip.success ? `
           <video class="clip-video-preview" src="${clip.blobUrl}" controls playsinline></video>
         ` : `
@@ -2186,6 +2350,21 @@ ${escapeHtml(fullCaption)}
       container.appendChild(card);
     });
   }
+
+  window.retryHook = async function(idx) {
+    const clip = state.renderedClips[idx];
+    if (!clip || !clip.hook) return;
+    showModal('Merekam Ulang Hook...', `Hook #${idx+1}`);
+    try {
+      const blobUrl = await renderSingleClip(buildHookRenderClip(clip), p => updateProgress(p, `Merekam Ulang Hook: ${Math.round(p)}%`));
+      state.renderedClips[idx] = { ...clip, hookBlobUrl: blobUrl, hookSuccess: true, hookAttempted: true, hookError: null };
+      hideModal();
+      renderResultsPage();
+    } catch (err) {
+      alert(`Gagal rekam ulang hook: ${err.message}`);
+      hideModal();
+    }
+  };
 
   window.retrySingleClip = async function(idx) {
     const clip = state.renderedClips[idx];
@@ -2237,8 +2416,12 @@ ${escapeHtml(fullCaption)}
         const clip = allClips[i];
         const rendered = renderedByIndex.get(i);
         let blob = null;
+        let hookBlob = null;
         if (rendered && rendered.success && rendered.blobUrl) {
           blob = await fetch(rendered.blobUrl).then(r => r.blob());
+        }
+        if (rendered && rendered.hookSuccess && rendered.hookBlobUrl) {
+          hookBlob = await fetch(rendered.hookBlobUrl).then(r => r.blob());
         }
         clipsToSave.push({
           headline: clip.headline,
@@ -2253,6 +2436,8 @@ ${escapeHtml(fullCaption)}
           viral_score: clip.viral_score,
           reason: clip.reason || '',
           subtitles: clip.subtitles || [],
+          hook: clip.hook || null,
+          hookBlob,
           blob // null kalau clip ini belum/gagal dirender, masih bisa dirender lagi pas dibuka
         });
       }
@@ -2334,12 +2519,20 @@ ${escapeHtml(fullCaption)}
           end_sec: c.end_sec,
           viral_score: c.viral_score,
           reason: c.reason || '',
-          subtitles: c.subtitles || []
+          subtitles: c.subtitles || [],
+          hook: c.hook || null
         }))
       };
 
       state.renderedClips = project.clips
-        .map((c, idx) => c.blob ? { ...state.aiResults.clips[idx], blobUrl: URL.createObjectURL(c.blob), success: true } : null)
+        .map((c, idx) => c.blob ? {
+          ...state.aiResults.clips[idx],
+          blobUrl: URL.createObjectURL(c.blob),
+          success: true,
+          hookBlobUrl: c.hookBlob ? URL.createObjectURL(c.hookBlob) : null,
+          hookSuccess: !!c.hookBlob,
+          hookAttempted: !!(c.hook && c.hookBlob)
+        } : null)
         .filter(Boolean);
 
       state.historyEditMode = true;
@@ -2393,6 +2586,10 @@ ${escapeHtml(fullCaption)}
       r.checked = (r.value === ed.durationChoice);
       if (r.checked) r.dispatchEvent(new Event('change'));
     });
+
+    setSlider('sliderIdeaCount', ed.ideaCount != null ? ed.ideaCount : 5);
+    el('hookEnabledToggle').checked = ed.hookEnabled !== false;
+    el('hookEnabledToggle').dispatchEvent(new Event('change'));
   }
 
   async function openHistoryDrawer() {
@@ -2448,6 +2645,8 @@ ${escapeHtml(fullCaption)}
                   <span class="clip-rank-badge">#${idx + 1} Clip</span>
                   ${clip.viral_score != null ? `<span class="viral-score">🔥 Viral Score: ${clip.viral_score}/100</span>` : ''}
                 </div>
+
+                ${(clip.hook && clip.hookBlob) ? buildHookHtml(clip, idx, URL.createObjectURL(clip.hookBlob), true, '', false) : ''}
 
                 <video class="clip-video-preview" src="${url}" controls playsinline preload="metadata"></video>
 
